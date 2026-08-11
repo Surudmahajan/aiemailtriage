@@ -1,0 +1,153 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="AI Email Triage Agent — Human-in-the-Loop Customer Support Automation" />
+    <title>AI Email Triage Agent</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap" rel="stylesheet" />
+    <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+    <!-- Toast Notification -->
+    <div id="toast" class="toast hidden" role="alert" aria-live="polite">
+        <span id="toastIcon"></span>
+        <span id="toastMsg"></span>
+        <button id="toastClose" aria-label="Close notification">&times;</button>
+    </div>
+
+    <!-- Ambient background blobs -->
+    <div class="blob blob-1" aria-hidden="true"></div>
+    <div class="blob blob-2" aria-hidden="true"></div>
+
+    <div class="wrapper">
+
+        <!-- ── HEADER ── -->
+        <header class="hero">
+            <div class="hero-badge">Agentic AI · Human-in-the-Loop</div>
+            <h1>AI Email Triage Agent</h1>
+            <p>Intelligent Customer Support Automation with Human Approval</p>
+            <div id="backendStatus" class="status-pill checking">
+                <span class="status-dot"></span>
+                <span id="statusText">Checking backend…</span>
+            </div>
+        </header>
+
+        <main>
+
+            <!-- ── INPUT CARD ── -->
+            <section class="card" id="inputCard">
+                <div class="card-head">
+                    <h2>📨 Incoming Email</h2>
+                    <div class="quick-btns" id="quickBtns">
+                        <button class="btn-chip" id="btnFetch">⬇ Fetch from Inbox</button>
+                        <button class="btn-chip" id="btnTech">Technical Issue</button>
+                        <button class="btn-chip" id="btnBilling">Billing Issue</button>
+                        <button class="btn-chip" id="btnRefund">Refund Request</button>
+                    </div>
+                </div>
+
+                <!-- Sender info (shown after email is fetched) -->
+                <div id="senderBanner" class="sender-banner hidden">
+                    <span class="sender-label">From:</span>
+                    <span id="senderAddress"></span>
+                    <span class="sender-label" style="margin-left:1rem;">Subject:</span>
+                    <span id="emailSubject"></span>
+                </div>
+
+                <textarea
+                    id="emailInput"
+                    rows="7"
+                    placeholder="Paste a customer email here, or click 'Fetch from Inbox' to pull the latest unread email directly from Gmail…"
+                    aria-label="Customer email input"
+                ></textarea>
+
+                <button id="analyzeBtn" class="btn btn-primary" disabled>
+                    <span id="analyzeBtnText">Analyze Email</span>
+                    <span class="spinner hidden" id="analyzeSpinner" aria-hidden="true"></span>
+                </button>
+            </section>
+
+            <!-- ── RESULTS SECTION ── -->
+            <section id="resultsSection" class="hidden" aria-live="polite">
+
+                <!-- Metadata grid -->
+                <div class="meta-grid">
+                    <div class="card meta-card">
+                        <span class="meta-label">Ticket ID</span>
+                        <span class="meta-value mono" id="resTicketId">—</span>
+                    </div>
+                    <div class="card meta-card">
+                        <span class="meta-label">Category</span>
+                        <span class="meta-value tag" id="resCategory">—</span>
+                    </div>
+                    <div class="card meta-card">
+                        <span class="meta-label">Priority</span>
+                        <span class="meta-value tag priority-tag" id="resPriority">—</span>
+                    </div>
+                    <div class="card meta-card">
+                        <span class="meta-label">Sentiment</span>
+                        <span class="meta-value tag sentiment-tag" id="resSentiment">—</span>
+                    </div>
+                    <div class="card meta-card">
+                        <span class="meta-label">Assigned Team</span>
+                        <span class="meta-value" id="resTeam">—</span>
+                    </div>
+                    <div class="card meta-card">
+                        <span class="meta-label">Est. Response</span>
+                        <span class="meta-value" id="resEta">—</span>
+                    </div>
+                    <!-- Confidence — full width -->
+                    <div class="card meta-card confidence-card">
+                        <div class="confidence-row">
+                            <span class="meta-label">AI Confidence</span>
+                            <span class="meta-value" id="resConfText">0%</span>
+                        </div>
+                        <div class="progress-track">
+                            <div class="progress-fill" id="resConfBar" style="width:0%"></div>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Summary & Intent -->
+                <div class="card detail-card">
+                    <h2>🧠 Analysis</h2>
+                    <div class="intent-box">
+                        <span class="meta-label">Detected Intent</span>
+                        <span id="resIntent" class="intent-value">—</span>
+                    </div>
+                    <p id="resSummary" class="summary-text">—</p>
+                </div>
+
+                <!-- Editable Reply -->
+                <div class="card detail-card">
+                    <h2>✏️ Suggested Reply <span class="editable-hint">(editable — modify before approving)</span></h2>
+                    <textarea id="replyInput" rows="9" aria-label="Editable AI suggested reply"></textarea>
+                </div>
+
+                <!-- Action buttons -->
+                <div class="action-row">
+                    <button id="rejectBtn" class="btn btn-danger">
+                        <span id="rejectBtnText">✕ Reject</span>
+                        <span class="spinner hidden" id="rejectSpinner" aria-hidden="true"></span>
+                    </button>
+                    <button id="approveBtn" class="btn btn-success">
+                        <span id="approveBtnText">✓ Approve &amp; Send</span>
+                        <span class="spinner hidden" id="approveSpinner" aria-hidden="true"></span>
+                    </button>
+                </div>
+
+            </section>
+        </main>
+
+        <footer class="site-footer">
+            AI Email Triage Agent &mdash; Built for Agentic AI &amp; Industrial Automation Evaluation
+        </footer>
+    </div>
+
+    <script src="config.js"></script>
+    <script src="script.js"></script>
+</body>
+</html>
