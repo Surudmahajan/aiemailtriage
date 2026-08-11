@@ -130,6 +130,18 @@
                     <textarea id="replyInput" rows="9" aria-label="Editable AI suggested reply"></textarea>
                 </div>
 
+                <!-- Recipient email field -->
+                <div class="card detail-card" style="margin-bottom:1rem;">
+                    <h2>📧 Send Reply To</h2>
+                    <input
+                        type="email"
+                        id="recipientInput"
+                        placeholder="customer@example.com"
+                        aria-label="Recipient email address"
+                    />
+                    <p style="font-size:0.75rem;color:#52525b;margin-top:0.5rem;">Auto-filled when fetched from inbox. Enter manually if you typed the email.</p>
+                </div>
+
                 <div class="action-row">
                     <button id="rejectBtn" class="btn btn-danger">
                         <span id="rejectBtnText">✕ Reject</span>

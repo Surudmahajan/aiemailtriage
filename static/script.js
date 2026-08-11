@@ -47,6 +47,7 @@ const resConfBar     = document.getElementById("resConfBar");
 const resIntent      = document.getElementById("resIntent");
 const resSummary     = document.getElementById("resSummary");
 const replyInput     = document.getElementById("replyInput");
+const recipientInput = document.getElementById("recipientInput");
 
 const approveBtn     = document.getElementById("approveBtn");
 const approveBtnText = document.getElementById("approveBtnText");
@@ -147,6 +148,7 @@ async function fetchFromInbox() {
         emailSubject.textContent  = data.subject || "(No Subject)";
         senderBanner.classList.remove("hidden");
         emailInput.value     = data.body || "";
+        recipientInput.value = data.sender_email || ""; // auto-fill recipient
         updateAnalyzeBtn();
         showToast(`Email fetched from ${data.sender_email}. Marked as read.`, "success");
 
@@ -229,7 +231,8 @@ async function submitDecision(action) {
     const textEl    = isApprove ? approveBtnText : rejectBtnText;
     const origLabel = isApprove ? "✓ Approve & Send" : "✕ Reject";
 
-    // Include whatever the operator may have edited in the textarea
+    // Use whatever is in the recipient input field (auto-filled or manually entered)
+    currentAnalysis.sender_email   = recipientInput.value.trim();
     currentAnalysis.suggested_reply = replyInput.value;
 
     setLoading(btn, spinner, textEl, true, "Processing…");
@@ -260,8 +263,9 @@ async function submitDecision(action) {
 
 // ─── Reset UI ─────────────────────────────────────────────────────────────────
 function resetUI() {
-    emailInput.value = "";
-    currentAnalysis  = null;
+    emailInput.value     = "";
+    recipientInput.value = "";
+    currentAnalysis      = null;
     currentSender    = "";
     senderBanner.classList.add("hidden");
     resultsSection.classList.add("hidden");
