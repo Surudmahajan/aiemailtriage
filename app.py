@@ -1,5 +1,4 @@
 import os
-import csv
 import json
 import uuid
 import imaplib
@@ -9,13 +8,13 @@ import email as email_module
 from email.header import decode_header
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
-from pathlib import Path
 
 import httpx
+import gspread
+from google.oauth2.service_account import Credentials
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse
 from pydantic import BaseModel
 from dotenv import load_dotenv
 
@@ -24,24 +23,19 @@ from dotenv import load_dotenv
 # ─────────────────────────────────────────
 load_dotenv()
 
-OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
-LLM_MODEL          = os.getenv("LLM_MODEL", "google/gemini-2.5-flash")
-GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS", "")
-GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+OPENROUTER_API_KEY        = os.getenv("OPENROUTER_API_KEY", "")
+LLM_MODEL                 = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
+GMAIL_ADDRESS             = os.getenv("GMAIL_ADDRESS", "")
+GMAIL_APP_PASSWORD        = os.getenv("GMAIL_APP_PASSWORD", "")
+GOOGLE_SHEET_ID           = os.getenv("GOOGLE_SHEET_ID", "")
+GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
 
-# Path to the CSV file that acts as our database
-DB_PATH = Path("triage_database.csv")
-DB_COLUMNS = [
+# Google Sheets column headers (must match your sheet's first row)
+SHEET_HEADERS = [
     "Timestamp", "Ticket ID", "Category", "Priority", "Sentiment",
     "Customer Intent", "Assigned Team", "Estimated Response Time",
     "Confidence", "Human Decision"
 ]
-
-# Create the CSV with headers if it doesn't already exist
-if not DB_PATH.exists():
-    with open(DB_PATH, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(DB_COLUMNS)
 
 # ─────────────────────────────────────────
 #  App & Middleware
@@ -73,20 +67,34 @@ class TicketPayload(BaseModel):
     summary: str
     suggested_reply: str
     confidence: int
-    sender_email: str = ""   # populated when email is fetched from inbox
+    sender_email: str = ""
 
 # ─────────────────────────────────────────
-#  Helper: Generate Ticket ID
+#  Helper: Google Sheets client
 # ─────────────────────────────────────────
-def generate_ticket_id() -> str:
-    date_str   = datetime.datetime.now().strftime("%Y%m%d")
-    short_uuid = str(uuid.uuid4())[:8].upper()
-    return f"TKT-{date_str}-{short_uuid}"
+def get_sheet():
+    """Returns the first worksheet of the configured Google Sheet."""
+    if not GOOGLE_SERVICE_ACCOUNT_JSON or not GOOGLE_SHEET_ID:
+        raise RuntimeError(
+            "Google Sheets is not configured. "
+            "Set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_SHEET_ID environment variables."
+        )
+    scopes = [
+        "https://www.googleapis.com/auth/spreadsheets",
+        "https://www.googleapis.com/auth/drive",
+    ]
+    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
+    creds  = Credentials.from_service_account_info(service_account_info, scopes=scopes)
+    client = gspread.authorize(creds)
+    sheet  = client.open_by_key(GOOGLE_SHEET_ID).sheet1
+    return sheet
 
 # ─────────────────────────────────────────
-#  Helper: Log ticket to CSV
+#  Helper: Log ticket to Google Sheet
 # ─────────────────────────────────────────
-def log_to_csv(ticket: TicketPayload, decision: str) -> None:
+def log_to_sheet(ticket: TicketPayload, decision: str) -> None:
+    """Appends a single row to the Google Sheet."""
+    sheet = get_sheet()
     row = [
         datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
         ticket.ticket_id,
@@ -99,16 +107,22 @@ def log_to_csv(ticket: TicketPayload, decision: str) -> None:
         ticket.confidence,
         decision,
     ]
-    with open(DB_PATH, "a", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(row)
+    sheet.append_row(row, value_input_option="USER_ENTERED")
+
+# ─────────────────────────────────────────
+#  Helper: Generate Ticket ID
+# ─────────────────────────────────────────
+def generate_ticket_id() -> str:
+    date_str   = datetime.datetime.now().strftime("%Y%m%d")
+    short_uuid = str(uuid.uuid4())[:8].upper()
+    return f"TKT-{date_str}-{short_uuid}"
 
 # ─────────────────────────────────────────
 #  Helper: Send reply via Gmail SMTP
 # ─────────────────────────────────────────
 def send_email_reply(to_address: str, subject: str, body: str) -> None:
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        raise RuntimeError("Gmail credentials are not configured in environment variables.")
+        raise RuntimeError("Gmail credentials are not configured.")
 
     msg = MIMEMultipart("alternative")
     msg["Subject"] = f"Re: {subject}"
@@ -125,37 +139,34 @@ def send_email_reply(to_address: str, subject: str, body: str) -> None:
 # ─────────────────────────────────────────
 def fetch_unread_email() -> dict:
     if not GMAIL_ADDRESS or not GMAIL_APP_PASSWORD:
-        raise RuntimeError("Gmail credentials are not configured in environment variables.")
+        raise RuntimeError("Gmail credentials are not configured.")
 
     mail = imaplib.IMAP4_SSL("imap.gmail.com")
     mail.login(GMAIL_ADDRESS, GMAIL_APP_PASSWORD)
     mail.select("inbox")
 
-    # Search for UNSEEN emails
     status, messages = mail.search(None, "UNSEEN")
     if status != "OK" or not messages[0]:
         mail.logout()
         return {}
 
-    # Pick the first (oldest) unread email
     email_ids = messages[0].split()
     email_id  = email_ids[0]
 
-    # Fetch the raw email
     status, msg_data = mail.fetch(email_id, "(RFC822)")
     raw_email        = msg_data[0][1]
     msg              = email_module.message_from_bytes(raw_email)
 
-    # Mark as read by removing the \Seen flag removal (marking it seen)
+    # Mark as read
     mail.store(email_id, "+FLAGS", "\\Seen")
     mail.logout()
 
-    # --- Parse sender ---
+    # Parse sender
     sender_raw  = msg.get("From", "")
-    sender_name, sender_addr = email_module.utils.parseaddr(sender_raw)
+    _, sender_addr = email_module.utils.parseaddr(sender_raw)
 
-    # --- Parse subject ---
-    raw_subject  = msg.get("Subject", "(No Subject)")
+    # Parse subject
+    raw_subject   = msg.get("Subject", "(No Subject)")
     decoded_parts = decode_header(raw_subject)
     subject_parts = []
     for part, enc in decoded_parts:
@@ -165,7 +176,7 @@ def fetch_unread_email() -> dict:
             subject_parts.append(part)
     subject = " ".join(subject_parts)
 
-    # --- Parse body ---
+    # Parse body
     body = ""
     if msg.is_multipart():
         for part in msg.walk():
@@ -183,7 +194,6 @@ def fetch_unread_email() -> dict:
 
     return {
         "sender_email": sender_addr,
-        "sender_name":  sender_name,
         "subject":      subject,
         "body":         body.strip(),
     }
@@ -194,16 +204,12 @@ def fetch_unread_email() -> dict:
 
 @app.get("/api/health")
 async def health_check():
-    """Health check — frontend calls this on load."""
     return {"status": "healthy"}
 
 
 @app.get("/api/fetch-email")
 async def fetch_email():
-    """
-    Connects to Gmail via IMAP, fetches the oldest UNSEEN email,
-    marks it as read, and returns it to the frontend.
-    """
+    """Fetches the oldest unread email from Gmail inbox and marks it as read."""
     try:
         result = fetch_unread_email()
         if not result:
@@ -212,17 +218,14 @@ async def fetch_email():
     except RuntimeError as e:
         raise HTTPException(status_code=503, detail=str(e))
     except imaplib.IMAP4.error as e:
-        raise HTTPException(status_code=401, detail=f"Gmail IMAP login failed: {str(e)}. Check your GMAIL_ADDRESS and GMAIL_APP_PASSWORD.")
+        raise HTTPException(status_code=401, detail=f"Gmail IMAP login failed: {str(e)}")
     except Exception as e:
         raise HTTPException(status_code=500, detail=f"Failed to fetch email: {str(e)}")
 
 
 @app.post("/api/analyze")
 async def analyze_email(request: EmailRequest):
-    """
-    Sends the email text to OpenRouter and returns a structured
-    JSON analysis with a generated Ticket ID.
-    """
+    """Sends the email to OpenRouter LLM and returns structured JSON analysis."""
     if not OPENROUTER_API_KEY:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY is not configured.")
 
@@ -282,15 +285,15 @@ Required JSON structure:
 
         ai_data = json.loads(raw_content)
 
-        # Inject the server-generated Ticket ID — LLM must never set this
+        # Server generates the Ticket ID — LLM must never set this
         ai_data["ticket_id"] = generate_ticket_id()
 
         return ai_data
 
     except json.JSONDecodeError:
-        raise HTTPException(status_code=500, detail="The AI returned an invalid JSON response. Please try again.")
+        raise HTTPException(status_code=500, detail="The AI returned invalid JSON. Please try again.")
     except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=502, detail=f"OpenRouter returned an error: {e.response.status_code}")
+        raise HTTPException(status_code=502, detail=f"OpenRouter error: {e.response.status_code}")
     except httpx.RequestError as e:
         raise HTTPException(status_code=503, detail=f"Cannot reach OpenRouter: {str(e)}")
     except Exception as e:
@@ -300,50 +303,49 @@ Required JSON structure:
 @app.post("/api/approve")
 async def approve_ticket(ticket: TicketPayload):
     """
-    Human approved the ticket.
-    1. Logs it to triage_database.csv with 'Approved'.
-    2. Sends the suggested_reply via Gmail SMTP to the original sender.
+    Human approved.
+    1. Logs ticket to Google Sheet with 'Approved'.
+    2. Sends the suggested reply via Gmail SMTP.
     """
     try:
-        log_to_csv(ticket, "Approved")
+        log_to_sheet(ticket, "Approved")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to log ticket to database: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to log to Google Sheets: {str(e)}")
 
     if ticket.sender_email:
         try:
             send_email_reply(
                 to_address=ticket.sender_email,
-                subject=f"Re: Your support ticket {ticket.ticket_id}",
+                subject=f"Your support ticket {ticket.ticket_id}",
                 body=ticket.suggested_reply,
             )
         except RuntimeError as e:
             raise HTTPException(status_code=503, detail=str(e))
         except smtplib.SMTPAuthenticationError:
-            raise HTTPException(status_code=401, detail="Gmail SMTP authentication failed. Check GMAIL_ADDRESS and GMAIL_APP_PASSWORD.")
+            raise HTTPException(status_code=401, detail="Gmail SMTP authentication failed.")
         except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Email sent failed: {str(e)}")
-        return {"status": "success", "message": f"Ticket approved. Reply sent to {ticket.sender_email}."}
+            raise HTTPException(status_code=500, detail=f"Email send failed: {str(e)}")
+        return {"status": "success", "message": f"Ticket approved. Reply sent to {ticket.sender_email} and logged to Google Sheets."}
 
-    return {"status": "success", "message": "Ticket approved and logged. No sender email — reply not sent."}
+    return {"status": "success", "message": "Ticket approved and logged to Google Sheets. No sender email — reply not sent."}
 
 
 @app.post("/api/reject")
 async def reject_ticket(ticket: TicketPayload):
     """
-    Human rejected the ticket.
-    Logs it to triage_database.csv with 'Rejected'. No email is sent.
+    Human rejected.
+    Logs ticket to Google Sheet with 'Rejected'. No email sent.
     """
     try:
-        log_to_csv(ticket, "Rejected")
+        log_to_sheet(ticket, "Rejected")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to log ticket to database: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Failed to log to Google Sheets: {str(e)}")
 
-    return {"status": "success", "message": "Ticket rejected and logged. No email was sent."}
+    return {"status": "success", "message": "Ticket rejected and logged to Google Sheets. No email was sent."}
 
 
 # ─────────────────────────────────────────
-#  Static Files & SPA Fallback
+#  Static Files (Frontend)
+# Must be mounted LAST — after all API routes
 # ─────────────────────────────────────────
-# Serve the frontend from the /static directory.
-# This MUST come after all API routes.
 app.mount("/", StaticFiles(directory="static", html=True), name="static")
