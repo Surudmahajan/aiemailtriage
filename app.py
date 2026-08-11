@@ -10,8 +10,8 @@ from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 
 import httpx
-import gspread
-from google.oauth2.service_account import Credentials
+import psycopg2
+import psycopg2.extras
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
@@ -23,19 +23,53 @@ from dotenv import load_dotenv
 # ─────────────────────────────────────────
 load_dotenv()
 
-OPENROUTER_API_KEY        = os.getenv("OPENROUTER_API_KEY", "")
-LLM_MODEL                 = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
-GMAIL_ADDRESS             = os.getenv("GMAIL_ADDRESS", "")
-GMAIL_APP_PASSWORD        = os.getenv("GMAIL_APP_PASSWORD", "")
-GOOGLE_SHEET_ID           = os.getenv("GOOGLE_SHEET_ID", "")
-GOOGLE_SERVICE_ACCOUNT_JSON = os.getenv("GOOGLE_SERVICE_ACCOUNT_JSON", "")
+OPENROUTER_API_KEY = os.getenv("OPENROUTER_API_KEY", "")
+LLM_MODEL          = os.getenv("LLM_MODEL", "meta-llama/llama-3.3-70b-instruct")
+GMAIL_ADDRESS      = os.getenv("GMAIL_ADDRESS", "")
+GMAIL_APP_PASSWORD = os.getenv("GMAIL_APP_PASSWORD", "")
+DATABASE_URL       = os.getenv("DATABASE_URL", "")  # Neon Postgres connection string
 
-# Google Sheets column headers (must match your sheet's first row)
-SHEET_HEADERS = [
-    "Timestamp", "Ticket ID", "Category", "Priority", "Sentiment",
-    "Customer Intent", "Assigned Team", "Estimated Response Time",
-    "Confidence", "Human Decision"
-]
+# ─────────────────────────────────────────
+#  Database: Init table on startup
+# ─────────────────────────────────────────
+def get_db_connection():
+    """Returns a new psycopg2 connection to Neon Postgres."""
+    if not DATABASE_URL:
+        raise RuntimeError("DATABASE_URL is not configured.")
+    return psycopg2.connect(DATABASE_URL, sslmode="require")
+
+def init_db():
+    """Creates the tickets table if it doesn't already exist."""
+    if not DATABASE_URL:
+        print("WARNING: DATABASE_URL not set — database logging will be unavailable.")
+        return
+    try:
+        conn = get_db_connection()
+        cur  = conn.cursor()
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS tickets (
+                id                      SERIAL PRIMARY KEY,
+                timestamp               TIMESTAMPTZ DEFAULT NOW(),
+                ticket_id               VARCHAR(60)  NOT NULL,
+                category                VARCHAR(100),
+                priority                VARCHAR(50),
+                sentiment               VARCHAR(50),
+                customer_intent         VARCHAR(255),
+                assigned_team           VARCHAR(100),
+                estimated_response_time VARCHAR(50),
+                confidence              INTEGER,
+                human_decision          VARCHAR(50)
+            );
+        """)
+        conn.commit()
+        cur.close()
+        conn.close()
+        print("Database ready.")
+    except Exception as e:
+        print(f"Database init warning: {e}")
+
+# Run once at startup
+init_db()
 
 # ─────────────────────────────────────────
 #  App & Middleware
@@ -70,33 +104,26 @@ class TicketPayload(BaseModel):
     sender_email: str = ""
 
 # ─────────────────────────────────────────
-#  Helper: Google Sheets client
+#  Helper: Generate Ticket ID
 # ─────────────────────────────────────────
-def get_sheet():
-    """Returns the first worksheet of the configured Google Sheet."""
-    if not GOOGLE_SERVICE_ACCOUNT_JSON or not GOOGLE_SHEET_ID:
-        raise RuntimeError(
-            "Google Sheets is not configured. "
-            "Set GOOGLE_SERVICE_ACCOUNT_JSON and GOOGLE_SHEET_ID environment variables."
-        )
-    scopes = [
-        "https://www.googleapis.com/auth/spreadsheets",
-        "https://www.googleapis.com/auth/drive",
-    ]
-    service_account_info = json.loads(GOOGLE_SERVICE_ACCOUNT_JSON)
-    creds  = Credentials.from_service_account_info(service_account_info, scopes=scopes)
-    client = gspread.authorize(creds)
-    sheet  = client.open_by_key(GOOGLE_SHEET_ID).sheet1
-    return sheet
+def generate_ticket_id() -> str:
+    date_str   = datetime.datetime.now().strftime("%Y%m%d")
+    short_uuid = str(uuid.uuid4())[:8].upper()
+    return f"TKT-{date_str}-{short_uuid}"
 
 # ─────────────────────────────────────────
-#  Helper: Log ticket to Google Sheet
+#  Helper: Log ticket to Neon Postgres
 # ─────────────────────────────────────────
-def log_to_sheet(ticket: TicketPayload, decision: str) -> None:
-    """Appends a single row to the Google Sheet."""
-    sheet = get_sheet()
-    row = [
-        datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+def log_to_db(ticket: TicketPayload, decision: str) -> None:
+    """Inserts a ticket record into the Neon Postgres database."""
+    conn = get_db_connection()
+    cur  = conn.cursor()
+    cur.execute("""
+        INSERT INTO tickets
+            (ticket_id, category, priority, sentiment, customer_intent,
+             assigned_team, estimated_response_time, confidence, human_decision)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+    """, (
         ticket.ticket_id,
         ticket.category,
         ticket.priority,
@@ -106,16 +133,10 @@ def log_to_sheet(ticket: TicketPayload, decision: str) -> None:
         ticket.estimated_response_time,
         ticket.confidence,
         decision,
-    ]
-    sheet.append_row(row, value_input_option="USER_ENTERED")
-
-# ─────────────────────────────────────────
-#  Helper: Generate Ticket ID
-# ─────────────────────────────────────────
-def generate_ticket_id() -> str:
-    date_str   = datetime.datetime.now().strftime("%Y%m%d")
-    short_uuid = str(uuid.uuid4())[:8].upper()
-    return f"TKT-{date_str}-{short_uuid}"
+    ))
+    conn.commit()
+    cur.close()
+    conn.close()
 
 # ─────────────────────────────────────────
 #  Helper: Send reply via Gmail SMTP
@@ -150,8 +171,7 @@ def fetch_unread_email() -> dict:
         mail.logout()
         return {}
 
-    email_ids = messages[0].split()
-    email_id  = email_ids[0]
+    email_id = messages[0].split()[0]
 
     status, msg_data = mail.fetch(email_id, "(RFC822)")
     raw_email        = msg_data[0][1]
@@ -162,27 +182,20 @@ def fetch_unread_email() -> dict:
     mail.logout()
 
     # Parse sender
-    sender_raw  = msg.get("From", "")
-    _, sender_addr = email_module.utils.parseaddr(sender_raw)
+    _, sender_addr = email_module.utils.parseaddr(msg.get("From", ""))
 
     # Parse subject
-    raw_subject   = msg.get("Subject", "(No Subject)")
-    decoded_parts = decode_header(raw_subject)
-    subject_parts = []
-    for part, enc in decoded_parts:
-        if isinstance(part, bytes):
-            subject_parts.append(part.decode(enc or "utf-8", errors="replace"))
-        else:
-            subject_parts.append(part)
-    subject = " ".join(subject_parts)
+    decoded_parts = decode_header(msg.get("Subject", "(No Subject)"))
+    subject = " ".join(
+        part.decode(enc or "utf-8", errors="replace") if isinstance(part, bytes) else part
+        for part, enc in decoded_parts
+    )
 
     # Parse body
     body = ""
     if msg.is_multipart():
         for part in msg.walk():
-            content_type        = part.get_content_type()
-            content_disposition = str(part.get("Content-Disposition", ""))
-            if content_type == "text/plain" and "attachment" not in content_disposition:
+            if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition", "")):
                 payload = part.get_payload(decode=True)
                 if payload:
                     body = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
@@ -192,11 +205,7 @@ def fetch_unread_email() -> dict:
         if payload:
             body = payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
 
-    return {
-        "sender_email": sender_addr,
-        "subject":      subject,
-        "body":         body.strip(),
-    }
+    return {"sender_email": sender_addr, "subject": subject, "body": body.strip()}
 
 # ─────────────────────────────────────────
 #  API Endpoints
@@ -209,7 +218,7 @@ async def health_check():
 
 @app.get("/api/fetch-email")
 async def fetch_email():
-    """Fetches the oldest unread email from Gmail inbox and marks it as read."""
+    """Fetches the oldest unread email from Gmail and marks it as read."""
     try:
         result = fetch_unread_email()
         if not result:
@@ -225,7 +234,7 @@ async def fetch_email():
 
 @app.post("/api/analyze")
 async def analyze_email(request: EmailRequest):
-    """Sends the email to OpenRouter LLM and returns structured JSON analysis."""
+    """Analyzes the email with OpenRouter LLM and returns structured JSON."""
     if not OPENROUTER_API_KEY:
         raise HTTPException(status_code=500, detail="OPENROUTER_API_KEY is not configured.")
 
@@ -259,7 +268,6 @@ Required JSON structure:
             {"role": "user",   "content": f"Analyze this customer email:\n\n{request.email}"},
         ],
     }
-
     headers = {
         "Authorization": f"Bearer {OPENROUTER_API_KEY}",
         "Content-Type":  "application/json",
@@ -276,7 +284,7 @@ Required JSON structure:
 
         raw_content = response.json()["choices"][0]["message"]["content"].strip()
 
-        # Defensive cleanup in case the LLM wraps with markdown fences
+        # Defensive strip in case the LLM wraps in markdown fences
         if raw_content.startswith("```"):
             raw_content = raw_content.split("```", 2)[-1]
             if raw_content.startswith("json"):
@@ -285,9 +293,8 @@ Required JSON structure:
 
         ai_data = json.loads(raw_content)
 
-        # Server generates the Ticket ID — LLM must never set this
+        # Server generates Ticket ID — never the LLM
         ai_data["ticket_id"] = generate_ticket_id()
-
         return ai_data
 
     except json.JSONDecodeError:
@@ -304,13 +311,13 @@ Required JSON structure:
 async def approve_ticket(ticket: TicketPayload):
     """
     Human approved.
-    1. Logs ticket to Google Sheet with 'Approved'.
-    2. Sends the suggested reply via Gmail SMTP.
+    1. Logs ticket to Neon Postgres with 'Approved'.
+    2. Sends the suggested reply via Gmail SMTP to the original sender.
     """
     try:
-        log_to_sheet(ticket, "Approved")
+        log_to_db(ticket, "Approved")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to log to Google Sheets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
     if ticket.sender_email:
         try:
@@ -325,27 +332,26 @@ async def approve_ticket(ticket: TicketPayload):
             raise HTTPException(status_code=401, detail="Gmail SMTP authentication failed.")
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Email send failed: {str(e)}")
-        return {"status": "success", "message": f"Ticket approved. Reply sent to {ticket.sender_email} and logged to Google Sheets."}
+        return {"status": "success", "message": f"Approved. Reply sent to {ticket.sender_email} and logged to database."}
 
-    return {"status": "success", "message": "Ticket approved and logged to Google Sheets. No sender email — reply not sent."}
+    return {"status": "success", "message": "Approved and logged to database. No sender email — reply not sent."}
 
 
 @app.post("/api/reject")
 async def reject_ticket(ticket: TicketPayload):
     """
     Human rejected.
-    Logs ticket to Google Sheet with 'Rejected'. No email sent.
+    Logs ticket to Neon Postgres with 'Rejected'. No email sent.
     """
     try:
-        log_to_sheet(ticket, "Rejected")
+        log_to_db(ticket, "Rejected")
     except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to log to Google Sheets: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Database error: {str(e)}")
 
-    return {"status": "success", "message": "Ticket rejected and logged to Google Sheets. No email was sent."}
+    return {"status": "success", "message": "Rejected and logged to database. No email was sent."}
 
 
 # ─────────────────────────────────────────
-#  Static Files (Frontend)
-# Must be mounted LAST — after all API routes
+#  Static Files — mount LAST after all API routes
 # ─────────────────────────────────────────
 app.mount("/", StaticFiles(directory="static", html=True), name="static")

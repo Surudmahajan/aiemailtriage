@@ -4,5 +4,4 @@ httpx
 python-dotenv
 python-multipart
 pydantic
-gspread
-google-auth
+psycopg2-binary
