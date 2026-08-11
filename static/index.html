@@ -11,22 +11,30 @@
 </head>
 <body>
 
+    <!-- 3D Scene Background -->
+    <div class="scene" aria-hidden="true">
+        <div class="grid-lines"></div>
+        <div class="orb orb-1"></div>
+        <div class="orb orb-2"></div>
+        <div class="orb orb-3"></div>
+        <div class="cube cube-1"></div>
+        <div class="cube cube-2"></div>
+        <div class="cube cube-3"></div>
+        <div class="cube cube-4"></div>
+    </div>
+
     <!-- Toast Notification -->
     <div id="toast" class="toast hidden" role="alert" aria-live="polite">
         <span id="toastIcon"></span>
         <span id="toastMsg"></span>
-        <button id="toastClose" aria-label="Close notification">&times;</button>
+        <button id="toastClose" aria-label="Close">&times;</button>
     </div>
-
-    <!-- Ambient background blobs -->
-    <div class="blob blob-1" aria-hidden="true"></div>
-    <div class="blob blob-2" aria-hidden="true"></div>
 
     <div class="wrapper">
 
-        <!-- ── HEADER ── -->
+        <!-- ── HERO ── -->
         <header class="hero">
-            <div class="hero-badge">Agentic AI · Human-in-the-Loop</div>
+            <div class="hero-badge">Agentic AI &middot; Human-in-the-Loop</div>
             <h1>AI Email Triage Agent</h1>
             <p>Intelligent Customer Support Automation with Human Approval</p>
             <div id="backendStatus" class="status-pill checking">
@@ -41,7 +49,7 @@
             <section class="card" id="inputCard">
                 <div class="card-head">
                     <h2>📨 Incoming Email</h2>
-                    <div class="quick-btns" id="quickBtns">
+                    <div class="quick-btns">
                         <button class="btn-chip" id="btnFetch">⬇ Fetch from Inbox</button>
                         <button class="btn-chip" id="btnTech">Technical Issue</button>
                         <button class="btn-chip" id="btnBilling">Billing Issue</button>
@@ -49,11 +57,10 @@
                     </div>
                 </div>
 
-                <!-- Sender info (shown after email is fetched) -->
                 <div id="senderBanner" class="sender-banner hidden">
-                    <span class="sender-label">From:</span>
+                    <span class="sender-label">From</span>
                     <span id="senderAddress"></span>
-                    <span class="sender-label" style="margin-left:1rem;">Subject:</span>
+                    <span class="sender-label" style="margin-left:1rem;">Subject</span>
                     <span id="emailSubject"></span>
                 </div>
 
@@ -70,10 +77,9 @@
                 </button>
             </section>
 
-            <!-- ── RESULTS SECTION ── -->
+            <!-- ── RESULTS ── -->
             <section id="resultsSection" class="hidden" aria-live="polite">
 
-                <!-- Metadata grid -->
                 <div class="meta-grid">
                     <div class="card meta-card">
                         <span class="meta-label">Ticket ID</span>
@@ -99,7 +105,6 @@
                         <span class="meta-label">Est. Response</span>
                         <span class="meta-value" id="resEta">—</span>
                     </div>
-                    <!-- Confidence — full width -->
                     <div class="card meta-card confidence-card">
                         <div class="confidence-row">
                             <span class="meta-label">AI Confidence</span>
@@ -111,7 +116,6 @@
                     </div>
                 </div>
 
-                <!-- Summary & Intent -->
                 <div class="card detail-card">
                     <h2>🧠 Analysis</h2>
                     <div class="intent-box">
@@ -121,13 +125,11 @@
                     <p id="resSummary" class="summary-text">—</p>
                 </div>
 
-                <!-- Editable Reply -->
                 <div class="card detail-card">
                     <h2>✏️ Suggested Reply <span class="editable-hint">(editable — modify before approving)</span></h2>
                     <textarea id="replyInput" rows="9" aria-label="Editable AI suggested reply"></textarea>
                 </div>
 
-                <!-- Action buttons -->
                 <div class="action-row">
                     <button id="rejectBtn" class="btn btn-danger">
                         <span id="rejectBtnText">✕ Reject</span>
@@ -138,12 +140,11 @@
                         <span class="spinner hidden" id="approveSpinner" aria-hidden="true"></span>
                     </button>
                 </div>
-
             </section>
         </main>
 
         <footer class="site-footer">
-            AI Email Triage Agent &mdash; Built for Agentic AI &amp; Industrial Automation Evaluation
+            AI Email Triage Agent &mdash; Agentic AI &amp; Industrial Automation
         </footer>
     </div>
 
