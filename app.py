@@ -193,19 +193,44 @@ def fetch_unread_email() -> dict:
 
     # Parse body
     body = ""
+    html_body = ""
     if msg.is_multipart():
         for part in msg.walk():
-            if part.get_content_type() == "text/plain" and "attachment" not in str(part.get("Content-Disposition", "")):
-                payload = part.get_payload(decode=True)
-                if payload:
-                    body = payload.decode(part.get_content_charset() or "utf-8", errors="replace")
-                    break
+            content_type = part.get_content_type()
+            disposition = str(part.get("Content-Disposition", ""))
+            if "attachment" in disposition:
+                continue
+            
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+                
+            charset = part.get_content_charset() or "utf-8"
+            decoded = payload.decode(charset, errors="replace")
+            
+            if content_type == "text/plain":
+                body = decoded
+                break
+            elif content_type == "text/html":
+                html_body = decoded
     else:
         payload = msg.get_payload(decode=True)
         if payload:
-            body = payload.decode(msg.get_content_charset() or "utf-8", errors="replace")
+            charset = msg.get_content_charset() or "utf-8"
+            decoded = payload.decode(charset, errors="replace")
+            if msg.get_content_type() == "text/html":
+                html_body = decoded
+            else:
+                body = decoded
+
+    # Fallback to HTML if no plain text
+    if not body and html_body:
+        import re
+        # Basic HTML stripping
+        body = re.sub('<[^<]+>', '', html_body).replace('&nbsp;', ' ').strip()
 
     return {"sender_email": sender_addr, "subject": subject, "body": body.strip()}
+
 
 # ─────────────────────────────────────────
 #  API Endpoints
@@ -284,12 +309,11 @@ Required JSON structure:
 
         raw_content = response.json()["choices"][0]["message"]["content"].strip()
 
-        # Defensive strip in case the LLM wraps in markdown fences
-        if raw_content.startswith("```"):
-            raw_content = raw_content.split("```", 2)[-1]
-            if raw_content.startswith("json"):
-                raw_content = raw_content[4:]
-            raw_content = raw_content.rsplit("```", 1)[0].strip()
+        # Extract JSON if wrapped in markdown fences
+        import re
+        match = re.search(r'```(?:json)?(.*?)```', raw_content, re.DOTALL)
+        if match:
+            raw_content = match.group(1).strip()
 
         ai_data = json.loads(raw_content)
 
